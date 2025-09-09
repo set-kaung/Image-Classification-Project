@@ -9,9 +9,9 @@ import json
 from datetime import datetime
 import random
 from PIL import Image, ImageFile
+from time import process_time
 
-# Handle very large images safely (prevents DecompressionBombWarning & huge memory use)
-Image.MAX_IMAGE_PIXELS = 300_000_000  # increase limit (adjust or set to None to disable)
+Image.MAX_IMAGE_PIXELS = 300_000_000 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
@@ -93,7 +93,9 @@ if __name__ == "__main__":
     best_model_path = None
 
     print(f"Starting training on {DEVICE} for {EPOCHS} epochs | Classes: {class_names}")
+    
     for epoch in range(1, EPOCHS + 1):
+        start = process_time()
         model.train()
         running_loss = 0.0
         correct = 0
@@ -128,7 +130,8 @@ if __name__ == "__main__":
                 val_total += labels.size(0)
         val_loss = val_loss_accum / val_total if val_total else 0.0
         val_acc = 100.0 * val_correct / val_total if val_total else 0.0
-
+        end = process_time()
+        print(f"End of epoch {epoch:02d}, time taken: {end-start}")
         print(f"Epoch {epoch:02d}/{EPOCHS} | Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}%")
 
     if val_acc > best_val_acc:
@@ -143,8 +146,6 @@ if __name__ == "__main__":
                 'epoch': epoch
             }, best_model_path)
             print(f"  -> New best model saved: {best_model_path}")
-
-
     last_model_path = "models/last.pth"
     torch.save({
         'model_state_dict': model.state_dict(),

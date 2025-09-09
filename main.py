@@ -46,6 +46,10 @@ if __name__ == "__main__":
     BATCH_SIZE = 16
     LR = 1e-3
     IMAGE_SIZE = 256
+    if torch.cuda.is_available():
+        print("using cuda")
+    else:
+        print("using cpu")
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
    
@@ -134,18 +138,18 @@ if __name__ == "__main__":
         print(f"End of epoch {epoch:02d}, time taken: {end-start}")
         print(f"Epoch {epoch:02d}/{EPOCHS} | Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}%")
 
-    if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            best_model_path = f"models/best.pth"
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'num_classes': num_classes,
-                'class_names': class_names,
-                'val_acc': val_acc,
-                'epoch': epoch
-            }, best_model_path)
-            print(f"  -> New best model saved: {best_model_path}")
+        if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                best_model_path = f"models/{timestamp}_best.pth"
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'num_classes': num_classes,
+                    'class_names': class_names,
+                    'val_acc': val_acc,
+                    'epoch': epoch
+                }, best_model_path)
+                print(f"  -> New best model saved: {best_model_path}")
     last_model_path = "models/last.pth"
     torch.save({
         'model_state_dict': model.state_dict(),

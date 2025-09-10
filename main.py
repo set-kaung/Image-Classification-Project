@@ -10,6 +10,7 @@ from datetime import datetime
 import random
 from PIL import Image, ImageFile, ImageOps
 import warnings
+import argparse
 from time import process_time
 
 Image.MAX_IMAGE_PIXELS = 300_000_000 
@@ -84,8 +85,13 @@ if __name__ == "__main__":
     random.seed(SEED)
     torch.manual_seed(SEED)
     torch.cuda.manual_seed_all(SEED)
-    EPOCHS = 15
-    BATCH_SIZE = 48
+    parser = argparse.ArgumentParser(description="Train SimpleCNN")
+    parser.add_argument('--batch', type=int, default=48, help='Batch size')
+    parser.add_argument('--epochs', type=int, default=15, help='Number of training epochs')
+    args = parser.parse_args()
+
+    EPOCHS = args.epochs
+    BATCH_SIZE = args.batch
     LR = 1e-3
     IMAGE_SIZE = 256
     if torch.backends.mps.is_available(): 
@@ -161,7 +167,7 @@ if __name__ == "__main__":
     best_val_acc = 0.0
     best_model_path = None
 
-    print(f"Starting training on {DEVICE} for {EPOCHS} epochs | Classes: {class_names}")
+    print(f"Starting training on {DEVICE} for {EPOCHS} epochs | Batch: {BATCH_SIZE} | Classes: {class_names}")
     
     for epoch in range(1, EPOCHS + 1):
         start = process_time()

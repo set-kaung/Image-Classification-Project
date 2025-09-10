@@ -11,7 +11,7 @@ import random
 from PIL import Image, ImageFile, ImageOps
 import warnings
 import argparse
-from time import process_time
+import time
 
 Image.MAX_IMAGE_PIXELS = 300_000_000 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -120,6 +120,8 @@ if __name__ == "__main__":
     train_transform = transforms.Compose([
         transforms.Lambda(_safe_downscale),
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        # Geometric augmentation (rotation up to ±8°, small translate & scale)
+        transforms.RandomAffine(degrees=8, translate=(0.05, 0.05), scale=(0.95, 1.05)),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15),
         transforms.ToTensor(),
@@ -155,8 +157,12 @@ if __name__ == "__main__":
     )
 
     model = SimpleCNN(num_classes=num_classes).to(DEVICE)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LR)
+   
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.03)
+    WEIGHT_DECAY = 1e-4
+    optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    from torch.optim.lr_scheduler import ReduceLROnPlateau
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True, min_lr=1e-5)
 
     os.makedirs("models", exist_ok=True)
 
@@ -166,11 +172,13 @@ if __name__ == "__main__":
 
     best_val_acc = 0.0
     best_model_path = None
+    # Track best validation loss separately (scheduler already uses loss)
+    best_val_loss = float('inf')
 
     print(f"Starting training on {DEVICE} for {EPOCHS} epochs | Batch: {BATCH_SIZE} | Classes: {class_names}")
     
     for epoch in range(1, EPOCHS + 1):
-        start = process_time()
+        start = time.perf_counter()
         model.train()
         running_loss = 0.0
         correct = 0
@@ -205,9 +213,24 @@ if __name__ == "__main__":
                 val_total += labels.size(0)
         val_loss = val_loss_accum / val_total if val_total else 0.0
         val_acc = 100.0 * val_correct / val_total if val_total else 0.0
-        end = process_time()
-        print(f"End of epoch {epoch:02d}, time taken: {end-start}")
-        print(f"Epoch {epoch:02d}/{EPOCHS} | Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}%")
+    
+        if DEVICE.type == 'cuda':
+            torch.cuda.synchronize()
+        elif DEVICE.type == 'mps':
+            try:
+                torch.mps.synchronize()
+            except Exception:
+                pass
+        end = time.perf_counter()
+        print(f"End of epoch {epoch:02d}, time (s): {end-start:.3f}")
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch:02d}/{EPOCHS} | Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}% | LR: {current_lr:.2e}")
+
+        scheduler.step(val_loss)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            print(f"  -> New lowest val loss: {best_val_loss:.4f}")
 
         if val_acc > best_val_acc:
                 best_val_acc = val_acc
@@ -221,12 +244,13 @@ if __name__ == "__main__":
                     'epoch': epoch
                 }, best_model_path)
                 print(f"  -> New best model saved: {best_model_path}")
-    last_model_path = "models/last.pth"
+    timestamp_end = datetime.now().strftime('%Y%m%d_%H%M%S')
+    last_model_path = f"models/{timestamp_end}_last.pth"
     torch.save({
         'model_state_dict': model.state_dict(),
         'num_classes': num_classes,
         'class_names': class_names,
-        'val_acc': best_val_acc,  # store best val acc observed during run
+        'val_acc': best_val_acc, 
         'epoch': EPOCHS
     }, last_model_path)
     print(f"Last model saved to {last_model_path}")

@@ -8,11 +8,53 @@ import os
 import json
 from datetime import datetime
 import random
-from PIL import Image, ImageFile
+from PIL import Image, ImageFile, ImageOps
+import warnings
 from time import process_time
 
 Image.MAX_IMAGE_PIXELS = 300_000_000 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+# Suppress only the specific palette transparency warning (optional)
+warnings.filterwarnings(
+    "ignore",
+    message="Palette images with Transparency expressed in bytes"
+)
+
+def safe_image_loader(path: str):
+    """Robust image loader that:
+    - Opens image safely (handles truncated files)
+    - Preserves orientation via EXIF
+    - Converts palette / alpha images to RGB composited on white
+    - Avoids PIL transparency warning by going through RGBA first
+    - Downscales extremely large images to a max side (soft cap)
+    - Falls back to a blank image on failure
+    """
+    max_side = 4096  # hard ceiling to avoid huge memory spikes
+    try:
+        with Image.open(path) as im:
+            # EXIF orientation
+            try:
+                im = ImageOps.exif_transpose(im)
+            except Exception:
+                pass
+            mode = im.mode
+            if mode in ("P", "LA", "RGBA"):
+                # Ensure RGBA then composite onto white
+                im = im.convert("RGBA")
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                alpha = im.split()[-1]
+                bg.paste(im, mask=alpha)
+                im = bg
+            else:
+                im = im.convert("RGB")
+            # Large image soft downscale (keep aspect)
+            if max(im.size) > max_side:
+                im.thumbnail((max_side, max_side))
+            return im
+    except Exception as e:
+        print(f"[WARN] safe_image_loader failed for {path}: {e}")
+        return Image.new("RGB", (256, 256), (255, 255, 255))
 
 
 class SimpleCNN(nn.Module):
@@ -46,11 +88,15 @@ if __name__ == "__main__":
     BATCH_SIZE = 16
     LR = 1e-3
     IMAGE_SIZE = 256
-    if torch.cuda.is_available():
-        print("using cuda")
-    else:
-        print("using cpu")
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.backends.mps.is_available(): 
+        DEVICE = torch.device("mps") 
+        print("mps")
+    elif torch.cuda.is_available(): 
+        DEVICE = torch.device("cuda")
+        print("cuda") 
+    else: 
+        DEVICE = torch.device("cpu")
+        print("cpu")
 
    
    
@@ -75,8 +121,8 @@ if __name__ == "__main__":
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    train_dataset = datasets.ImageFolder(root="dataset/train", transform=train_transform)
-    val_dataset = datasets.ImageFolder(root="dataset/val", transform=val_transform)
+    train_dataset = datasets.ImageFolder(root="dataset/train", transform=train_transform, loader=safe_image_loader)
+    val_dataset = datasets.ImageFolder(root="dataset/val", transform=val_transform, loader=safe_image_loader)
     class_names = train_dataset.classes
     num_classes = len(class_names)
 

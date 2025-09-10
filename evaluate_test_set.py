@@ -1,223 +1,137 @@
-import os
-import glob
-import json
-from datetime import datetime
-from typing import List, Tuple
-
 import torch
-from torchvision import transforms
-from PIL import Image, ImageDraw, ImageFont
-from sklearn.metrics import confusion_matrix, classification_report
-import matplotlib.pyplot as plt
-import numpy as np
-# Optional AVIF support (ignore if not installed)
-try:
-    import pillow_avif  # type: ignore  # noqa: F401
-except Exception:
-    pass
-
 from main import SimpleCNN
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+from sklearn.metrics import confusion_matrix
+from metrics_utils import compute_confusion_metrics
+import matplotlib.pyplot as plt
+import math
+import numpy as np
 
-# Configuration
-TEST_ROOT = "test_dataset"
-MODELS_DIR = "models"
-EVAL_DIR = "evaluation"
-PRED_IMG_DIR = os.path.join(EVAL_DIR, "predictions")
-os.makedirs(PRED_IMG_DIR, exist_ok=True)
-os.makedirs(EVAL_DIR, exist_ok=True)
+MODEL_PATH = "models/20250909_101742_best.pth"
+TEST_DATASET_PATH = "test_dataset"
+
+if torch.backends.mps.is_available(): 
+    DEVICE = torch.device("mps") 
+elif torch.cuda.is_available(): 
+    DEVICE = torch.device("cuda") 
+else: 
+    DEVICE = torch.device("cpu")
 
 
-transform = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
-SUPPORTED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".bmp", ".tiff", ".tif"}
-
-def load_best_checkpoint(models_dir: str) -> Tuple[SimpleCNN, List[str], dict]:
-    best_candidates = glob.glob(os.path.join(models_dir, "best*.pth"))
-    if not best_candidates:
-        raise FileNotFoundError("No best*.pth checkpoint found. Train a model first.")
-    best_path = max(best_candidates, key=os.path.getctime)
-    ckpt = torch.load(best_path, map_location='cpu')
-    model = SimpleCNN(num_classes=ckpt['num_classes'])
-    model.load_state_dict(ckpt['model_state_dict'])
+def load_model():
+    ckpt = torch.load(MODEL_PATH, map_location=DEVICE)
+    if "model_state_dict" in ckpt:
+        num_classes = ckpt.get("num_classes", 5)
+        model = SimpleCNN(num_classes=num_classes)
+        state = ckpt["model_state_dict"]
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if missing or unexpected:
+            print(f"[WARN] Missing keys: {missing} | Unexpected keys: {unexpected}")
+        class_names = ckpt.get("class_names")
+    else:
+        state = ckpt
+        num_classes = 5
+        model = SimpleCNN(num_classes=num_classes)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if missing or unexpected:
+            print(f"[WARN] Missing keys: {missing} | Unexpected keys: {unexpected}")
+        class_names = None
+    model.to(DEVICE)
     model.eval()
-    return model, ckpt['class_names'], ckpt | {"_path": best_path}
+    return model, class_names
 
-def collect_test_images(root: str):
-    samples = []  # (path, true_class)
-    if not os.path.isdir(root):
-        raise FileNotFoundError(f"Test root not found: {root}")
-    for cls in sorted(os.listdir(root)):
-        cls_dir = os.path.join(root, cls)
-        if not os.path.isdir(cls_dir):
-            continue
-        for fname in sorted(os.listdir(cls_dir)):
-            ext = os.path.splitext(fname)[1].lower()
-            if ext in SUPPORTED_EXT:
-                samples.append((os.path.join(cls_dir, fname), cls))
-    return samples
+def get_test_loader():
+    transform = transforms.Compose(
+        [
+            transforms.Resize((256,256)),
+            transforms.ToTensor(), 
+            transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+        ]
+    )
+    test_ds = datasets.ImageFolder(TEST_DATASET_PATH, transform=transform)
+    test_loader = DataLoader(test_ds, batch_size=32, shuffle=False)
+    return test_loader
 
-def annotate_and_save(image: Image.Image, predicted: str, true_label: str, confidence: float, dest_path: str):
-    draw = ImageDraw.Draw(image)
-    text = f"Pred: {predicted} ({confidence*100:.1f}%) | True: {true_label}"
-    # Choose font
-    try:
-        font = ImageFont.truetype("Arial.ttf", 18)
-    except Exception:
-        font = ImageFont.load_default()
-    # Background rectangle
-    text_bbox = draw.textbbox((5,5), text, font=font)
-    draw.rectangle(text_bbox, fill=(0,0,0,160))
-    color = (0, 200, 0) if predicted == true_label else (220, 20, 20)
-    draw.text((8,8), text, font=font, fill=color)
-    image.save(dest_path)
 
-def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+def evaluate():
+    model, class_names_ckpt = load_model()
+    test_loader = get_test_loader()
+    ds = test_loader.dataset
+    class_names_ds = ds.classes
+    if class_names_ckpt and len(class_names_ckpt) == len(class_names_ds):
+        class_names = class_names_ckpt
+    else:
+        class_names = class_names_ds
 
-    model, class_names, ckpt_meta = load_best_checkpoint(MODELS_DIR)
-    model.to(device)
-    print(f"Loaded best checkpoint: {os.path.basename(ckpt_meta['_path'])} | Val Acc Stored: {ckpt_meta.get('val_acc', 'NA')}%")
-    print("Classes:", class_names)
-
-    samples = collect_test_images(TEST_ROOT)
-    if not samples:
-        print("No test images found.")
+    all_preds = []
+    all_labels = []
+    all_probs = []
+    sample_paths = [p for p,_ in ds.samples]
+    with torch.no_grad():
+        for x, y in test_loader:
+            x = x.to(DEVICE)
+            logits = model(x)
+            probs = torch.softmax(logits, dim=1).cpu()
+            preds = probs.argmax(1)
+            all_preds.append(preds)
+            all_labels.append(y)
+            all_probs.append(probs)
+    if not all_preds:
+        print("No data.")
         return
-    print(f"Found {len(samples)} test images.")
 
-    y_true = []
-    y_pred = []
-    per_image_results = []  # We'll keep only path + true/pred labels (no probabilities as requested)
+    preds = torch.cat(all_preds)
+    labels = torch.cat(all_labels)
+    probs_full = torch.cat(all_probs)
+    preds_np = preds.numpy()
+    labels_np = labels.numpy()
 
-    for idx, (path, true_cls) in enumerate(samples, 1):
+    cm = confusion_matrix(labels_np, preds_np, labels=list(range(len(class_names))))
+    metrics = compute_confusion_metrics(cm, class_names)
+
+    print("\nPer-class metrics:")
+    header = f"{'Class':<12} {'Prec%':>8} {'Rec%':>8} {'F1%':>8} {'Support':>8}"
+    print(header)
+    print('-' * len(header))
+    for row in metrics['per_class']:
+        print(f"{row['label']:<12} {row['precision']*100:8.2f} {row['recall']*100:8.2f} {row['f1']*100:8.2f} {row['support']:8d}")
+
+    print("\nMacro:")
+    print(f"Accuracy:        {metrics['accuracy']*100:.2f}%")
+    print(f"Precision(macro): {metrics['macro_precision']*100:.2f}%")
+    print(f"Recall(macro):    {metrics['macro_recall']*100:.2f}%")
+    print(f"F1(macro):        {metrics['macro_f1']*100:.2f}%")
+
+    n_images = len(sample_paths)
+    cols = min(6, n_images)
+    rows = math.ceil(n_images / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(3*cols, 3*rows))
+
+    if isinstance(axes, np.ndarray):
+        axes_flat = axes.ravel().tolist()
+    else:  
+        axes_flat = [axes]
+    from PIL import Image
+    for i, ax in enumerate(axes_flat):
+        if i >= n_images:
+            ax.axis('off')
+            continue
+        path = sample_paths[i]
         try:
             img = Image.open(path).convert('RGB')
-        except Exception as e:
-            print(f"[WARN] Skipping {path}: {e}")
-            continue
-        tensor = transform(img).unsqueeze(0).to(device)
-        with torch.no_grad():
-            out = model(tensor)
-            probs = torch.softmax(out, dim=1)[0].cpu().numpy()
-            pred_idx = int(np.argmax(probs))
-            pred_label = class_names[pred_idx]
-            conf = float(probs[pred_idx])
-        y_true.append(true_cls)
-        y_pred.append(pred_label)
-        per_image_results.append({
-            'image_path': path,
-            'true_class': true_cls,
-            'predicted_class': pred_label
-        })
-        # Annotated image filename
-        base = os.path.splitext(os.path.basename(path))[0]
-        out_name = f"{base}__pred-{pred_label}_true-{true_cls}_conf-{conf*100:.1f}.png"
-        dest = os.path.join(PRED_IMG_DIR, out_name)
-        annotate_and_save(img.resize((256,256)), pred_label, true_cls, conf, dest)
-        print(f"[{idx}/{len(samples)}] {path} -> {pred_label} ({conf*100:.1f}%)")
+            ax.imshow(img)
+        except Exception:
+            ax.text(0.5,0.5,'[load fail]', ha='center', va='center')
+        t = labels_np[i]
+        p = preds_np[i]
+        conf = float(probs_full[i, p]) * 100.0
+        color = 'green' if t == p else 'red'
+        ax.set_title(f"T:{class_names[t]}\nP:{class_names[p]} {conf:.1f}%", fontsize=8, color=color)
+        ax.set_xticks([]); ax.set_yticks([])
+    plt.tight_layout(h_pad=0.6)
+    plt.show()
 
-    # Confusion matrix
-    labels_sorted = sorted(set(class_names) | set(y_true))
-    cm = confusion_matrix(y_true, y_pred, labels=labels_sorted)
-    fig, ax = plt.subplots(figsize=(6,5), dpi=150)
-    im = ax.imshow(cm, cmap='Blues')
-    ax.set_xticks(range(len(labels_sorted)))
-    ax.set_yticks(range(len(labels_sorted)))
-    ax.set_xticklabels(labels_sorted, rotation=45, ha='right')
-    ax.set_yticklabels(labels_sorted)
-    ax.set_xlabel('Predicted')
-    ax.set_ylabel('True')
-    ax.set_title('Confusion Matrix (Test Set)')
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[1]):
-            ax.text(j, i, cm[i, j], ha='center', va='center', color='black', fontsize=8)
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cm_path = os.path.join(EVAL_DIR, 'confusion_matrix.png')
-    plt.tight_layout()
-    plt.savefig(cm_path)
-    plt.close(fig)
-    print(f"Saved confusion matrix to {cm_path}")
 
-    # Compute metrics: sensitivity (recall), specificity, accuracy, precision, f1-score
-    total = cm.sum()
-    overall_accuracy = float(np.trace(cm) / total) if total else 0.0
-
-    per_class_metrics = {}
-    recalls = []
-    precisions = []
-    specificities = []
-    f1s = []
-    supports = []
-
-    for i, cls in enumerate(labels_sorted):
-        tp = cm[i, i]
-        fn = cm[i, :].sum() - tp
-        fp = cm[:, i].sum() - tp
-        tn = total - (tp + fn + fp)
-        support = cm[i, :].sum()
-        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0  # recall
-        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        f1 = (2 * precision * sensitivity / (precision + sensitivity)) if (precision + sensitivity) > 0 else 0.0
-
-        per_class_metrics[cls] = {
-            'tp': int(tp), 'fp': int(fp), 'fn': int(fn), 'tn': int(tn),
-            'support': int(support),
-            'sensitivity': sensitivity,
-            'specificity': specificity,
-            'recall': sensitivity,
-            'precision': precision,
-            'f1': f1
-        }
-        recalls.append(sensitivity)
-        precisions.append(precision)
-        specificities.append(specificity)
-        f1s.append(f1)
-        supports.append(support)
-
-    supports_arr = np.array(supports)
-    weight_sum = supports_arr.sum() if supports_arr.sum() else 1
-
-    macro_metrics = {
-        'sensitivity': float(np.mean(recalls) if recalls else 0.0),
-        'specificity': float(np.mean(specificities) if specificities else 0.0),
-        'precision': float(np.mean(precisions) if precisions else 0.0),
-        'f1': float(np.mean(f1s) if f1s else 0.0)
-    }
-    weighted_metrics = {
-        'sensitivity': float(np.average(recalls, weights=supports_arr) if recalls else 0.0),
-        'specificity': float(np.average(specificities, weights=supports_arr) if specificities else 0.0),
-        'precision': float(np.average(precisions, weights=supports_arr) if precisions else 0.0),
-        'f1': float(np.average(f1s, weights=supports_arr) if f1s else 0.0)
-    }
-
-    # Aggregate JSON output
-    summary = {
-        'timestamp': datetime.now().isoformat() + 'Z',
-        'checkpoint_used': os.path.basename(ckpt_meta['_path']),
-        'classes': class_names,
-        'num_images': len(per_image_results),
-        'confusion_matrix_labels': labels_sorted,
-        'confusion_matrix': cm.tolist(),
-        'overall': {
-            'accuracy': overall_accuracy
-        },
-        'per_class': per_class_metrics,
-        'macro_averages': macro_metrics,
-        'weighted_averages': weighted_metrics,
-        'per_image_results': per_image_results
-    }
-    summary_path = os.path.join(EVAL_DIR, 'test_set_evaluation_summary.json')
-    with open(summary_path, 'w') as f:
-        json.dump(summary, f, indent=2)
-    print(f"Saved evaluation summary to {summary_path}")
-
-    print("Done.")
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    evaluate()

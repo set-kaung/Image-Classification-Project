@@ -162,7 +162,7 @@ if __name__ == "__main__":
     WEIGHT_DECAY = 1e-4
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     from torch.optim.lr_scheduler import ReduceLROnPlateau
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True, min_lr=1e-5)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-5)
 
     os.makedirs("models", exist_ok=True)
 
@@ -226,7 +226,11 @@ if __name__ == "__main__":
         current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch:02d}/{EPOCHS} | Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}% | LR: {current_lr:.2e}")
 
+        prev_lr = optimizer.param_groups[0]['lr']
         scheduler.step(val_loss)
+        new_lr = optimizer.param_groups[0]['lr']
+        if new_lr < prev_lr - 1e-12:
+            print(f"  -> LR reduced: {prev_lr:.2e} -> {new_lr:.2e}")
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss

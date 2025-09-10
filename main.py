@@ -85,7 +85,7 @@ if __name__ == "__main__":
     torch.manual_seed(SEED)
     torch.cuda.manual_seed_all(SEED)
     EPOCHS = 15
-    BATCH_SIZE = 16
+    BATCH_SIZE = 48
     LR = 1e-3
     IMAGE_SIZE = 256
     if torch.backends.mps.is_available(): 
@@ -97,6 +97,11 @@ if __name__ == "__main__":
     else: 
         DEVICE = torch.device("cpu")
         print("cpu")
+
+    # DataLoader performance knobs
+    NUM_WORKERS = 2  if (DEVICE.type == 'cuda') else 0 
+    PIN_MEMORY = (DEVICE.type == 'cuda')  # only helpful for CUDA
+    PERSISTENT = NUM_WORKERS > 0
 
    
    
@@ -126,8 +131,22 @@ if __name__ == "__main__":
     class_names = train_dataset.classes
     num_classes = len(class_names)
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=PIN_MEMORY,
+        persistent_workers=PERSISTENT,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=PIN_MEMORY,
+        persistent_workers=PERSISTENT,
+    )
 
     model = SimpleCNN(num_classes=num_classes).to(DEVICE)
     criterion = nn.CrossEntropyLoss()

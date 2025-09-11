@@ -1,0 +1,68 @@
+{
+  "timestamp": "20250911_030500",
+  "classes": [
+    "airplane",
+    "car",
+    "cat",
+    "horse",
+    "ship"
+  ],
+  "per_class": [
+    {
+      "label": "airplane",
+      "precision": 0.8333333333333334,
+      "recall": 0.6666666666666666,
+      "f1": 0.7407407407407408,
+      "support": 15,
+      "tp": 10,
+      "fp": 2,
+      "fn": 5
+    },
+    {
+      "label": "car",
+      "precision": 0.6923076923076923,
+      "recall": 0.6,
+      "f1": 0.6428571428571429,
+      "support": 15,
+      "tp": 9,
+      "fp": 4,
+      "fn": 6
+    },
+    {
+      "label": "cat",
+      "precision": 0.65,
+      "recall": 0.8666666666666667,
+      "f1": 0.7428571428571429,
+      "support": 15,
+      "tp": 13,
+      "fp": 7,
+      "fn": 2
+    },
+    {
+      "label": "horse",
+      "precision": 0.8,
+      "recall": 0.5333333333333333,
+      "f1": 0.64,
+      "support": 15,
+      "tp": 8,
+      "fp": 2,
+      "fn": 7
+    },
+    {
+      "label": "ship",
+      "precision": 0.7,
+      "recall": 0.9333333333333333,
+      "f1": 0.8,
+      "support": 15,
+      "tp": 14,
+      "fp": 6,
+      "fn": 1
+    }
+  ],
+  "macro": {
+    "accuracy": 0.72,
+    "precision": 0.7351282051282052,
+    "recall": 0.72,
+    "f1": 0.7132910052910054
+  }
+}

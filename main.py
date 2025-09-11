@@ -8,54 +8,21 @@ import os
 import json
 from datetime import datetime
 import random
-from PIL import Image, ImageFile, ImageOps
+from PIL import Image, ImageFile
 import warnings
 import argparse
 import time
+from image_utils import safe_image_loader,safe_downscale
 
 Image.MAX_IMAGE_PIXELS = 300_000_000 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-# Suppress only the specific palette transparency warning (optional)
 warnings.filterwarnings(
     "ignore",
     message="Palette images with Transparency expressed in bytes"
 )
 
-def safe_image_loader(path: str):
-    """Robust image loader that:
-    - Opens image safely (handles truncated files)
-    - Preserves orientation via EXIF
-    - Converts palette / alpha images to RGB composited on white
-    - Avoids PIL transparency warning by going through RGBA first
-    - Downscales extremely large images to a max side (soft cap)
-    - Falls back to a blank image on failure
-    """
-    max_side = 4096  # hard ceiling to avoid huge memory spikes
-    try:
-        with Image.open(path) as im:
-            # EXIF orientation
-            try:
-                im = ImageOps.exif_transpose(im)
-            except Exception:
-                pass
-            mode = im.mode
-            if mode in ("P", "LA", "RGBA"):
-                # Ensure RGBA then composite onto white
-                im = im.convert("RGBA")
-                bg = Image.new("RGB", im.size, (255, 255, 255))
-                alpha = im.split()[-1]
-                bg.paste(im, mask=alpha)
-                im = bg
-            else:
-                im = im.convert("RGB")
-            # Large image soft downscale (keep aspect)
-            if max(im.size) > max_side:
-                im.thumbnail((max_side, max_side))
-            return im
-    except Exception as e:
-        print(f"[WARN] safe_image_loader failed for {path}: {e}")
-        return Image.new("RGB", (256, 256), (255, 255, 255))
+
 
 
 class SimpleCNN(nn.Module):
@@ -79,7 +46,6 @@ class SimpleCNN(nn.Module):
         return x
 
 
-
 if __name__ == "__main__":
     SEED = 42
     random.seed(SEED)
@@ -88,6 +54,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train SimpleCNN")
     parser.add_argument('--batch', type=int, default=48, help='Batch size')
     parser.add_argument('--epochs', type=int, default=15, help='Number of training epochs')
+    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
+    parser.add_argument('--stop-after-lr-drops', type=int, default=0, help='Stop training after this many LR reductions (0=ignore)')
     args = parser.parse_args()
 
     EPOCHS = args.epochs
@@ -110,15 +78,8 @@ if __name__ == "__main__":
     PERSISTENT = NUM_WORKERS > 0
 
    
-   
-    def _safe_downscale(img):
-        if img.width * img.height > 20_000_000:
-            img = img.copy()
-            img.thumbnail((2048, 2048)) 
-        return img
-
     train_transform = transforms.Compose([
-        transforms.Lambda(_safe_downscale),
+        transforms.Lambda(safe_downscale),
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         # Geometric augmentation (rotation up to ±8°, small translate & scale)
         transforms.RandomAffine(degrees=8, translate=(0.05, 0.05), scale=(0.95, 1.05)),
@@ -172,12 +133,32 @@ if __name__ == "__main__":
 
     best_val_acc = 0.0
     best_model_path = None
-    # Track best validation loss separately (scheduler already uses loss)
     best_val_loss = float('inf')
+
+    start_epoch = 1
+    lr_drop_target = args.stop_after_lr_drops
+    lr_drop_count = 0
+
+    if args.resume and os.path.isfile(args.resume):
+        try:
+            ckpt = torch.load(args.resume, map_location=DEVICE)
+            state_dict = ckpt.get('model_state_dict', ckpt)
+            missing, unexpected = model.load_state_dict(state_dict, strict=False)
+            if missing or unexpected:
+                print(f"[RESUME WARN] missing: {missing} unexpected: {unexpected}")
+            prev_epoch = ckpt.get('epoch')
+            if isinstance(prev_epoch, int):
+                start_epoch = prev_epoch + 1
+            best_val_acc = ckpt.get('val_acc', best_val_acc)
+            best_val_loss = ckpt.get('best_val_loss', best_val_loss)
+            best_model_path = args.resume
+            print(f"Resumed from {args.resume} (epoch={prev_epoch}, best_val_acc={best_val_acc:.2f}%)")
+        except Exception as e:
+            print(f"[RESUME ERROR] Failed to load {args.resume}: {e}")
 
     print(f"Starting training on {DEVICE} for {EPOCHS} epochs | Batch: {BATCH_SIZE} | Classes: {class_names}")
     
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(start_epoch, EPOCHS + 1):
         start = time.perf_counter()
         model.train()
         running_loss = 0.0
@@ -230,7 +211,21 @@ if __name__ == "__main__":
         scheduler.step(val_loss)
         new_lr = optimizer.param_groups[0]['lr']
         if new_lr < prev_lr - 1e-12:
-            print(f"  -> LR reduced: {prev_lr:.2e} -> {new_lr:.2e}")
+            lr_drop_count += 1
+            print(f"  -> LR reduced: {prev_lr:.2e} -> {new_lr:.2e} (drops: {lr_drop_count}{'/' + str(lr_drop_target) if lr_drop_target else ''})")
+            if lr_drop_target and lr_drop_count >= lr_drop_target:
+                print(f"Reached target LR drops ({lr_drop_target}); stopping early after epoch {epoch}.")
+                timestamp_es = datetime.now().strftime('%Y%m%d_%H%M%S')
+                es_path = f"models/{timestamp_es}_earlystop_last.pth"
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'num_classes': num_classes,
+                    'class_names': class_names,
+                    'val_acc': best_val_acc,
+                    'epoch': epoch
+                }, es_path)
+                print(f"Early-stop model saved to {es_path}")
+                break
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -245,6 +240,7 @@ if __name__ == "__main__":
                     'num_classes': num_classes,
                     'class_names': class_names,
                     'val_acc': val_acc,
+                    'best_val_loss': best_val_loss,
                     'epoch': epoch
                 }, best_model_path)
                 print(f"  -> New best model saved: {best_model_path}")
@@ -254,13 +250,17 @@ if __name__ == "__main__":
         'model_state_dict': model.state_dict(),
         'num_classes': num_classes,
         'class_names': class_names,
-        'val_acc': best_val_acc, 
+        'val_acc': best_val_acc,
+        'best_val_loss': best_val_loss,
         'epoch': EPOCHS
     }, last_model_path)
     print(f"Last model saved to {last_model_path}")
-    if best_model_path:
-        print(f"Best model was {best_model_path} (Val Acc: {best_val_acc:.2f}%)")
+    if best_model_path and os.path.isfile(best_model_path):
+        print(f"Best model was {best_model_path} (Val Acc: {best_val_acc:.2f}%, Best Val Loss: {best_val_loss if best_val_loss != float('inf') else 'n/a'})")
     else:
-        print("No validation data available to determine best model.")
+        if best_val_acc > 0:
+            print(f"Best validation accuracy during run: {best_val_acc:.2f}% (original best model file not tracked this session)")
+        else:
+            print("No validation data available to determine best model.")
 
     print("Training complete.")

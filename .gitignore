@@ -12,6 +12,5 @@ wheels/
 
 
 # assests
-models/
-evaluation/
+evaluation/*/predictions
 .DS_Store

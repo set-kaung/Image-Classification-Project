@@ -114,8 +114,7 @@ if __name__ == "__main__":
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
-        sampler=sampler,
-        shuffle=False,
+        shuffle=True,
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
         persistent_workers=PERSISTENT,
@@ -123,7 +122,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(
         val_dataset,
         batch_size=BATCH_SIZE,
-        shuffle=False,
+        shuffle=True,
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
         persistent_workers=PERSISTENT,

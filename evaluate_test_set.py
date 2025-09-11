@@ -11,7 +11,7 @@ import os
 from datetime import datetime
 import json
 
-MODEL_PATH = "models/20250910_183320_best.pth"
+MODEL_PATH = "models/20250911_042530_best.pth"
 TEST_DATASET_PATH = "test_dataset"
 
 if torch.backends.mps.is_available(): 

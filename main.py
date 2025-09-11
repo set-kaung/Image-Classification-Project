@@ -12,7 +12,7 @@ from PIL import Image, ImageFile
 import warnings
 import argparse
 import time
-from image_utils import safe_image_loader,safe_downscale
+from utils import safe_image_loader,safe_downscale
 
 Image.MAX_IMAGE_PIXELS = 300_000_000 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -21,9 +21,6 @@ warnings.filterwarnings(
     "ignore",
     message="Palette images with Transparency expressed in bytes"
 )
-
-
-
 
 class SimpleCNN(nn.Module):
     def __init__(self, num_classes=5):
@@ -81,10 +78,9 @@ if __name__ == "__main__":
     train_transform = transforms.Compose([
         transforms.Lambda(safe_downscale),
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        # Geometric augmentation (rotation up to ±8°, small translate & scale)
         transforms.RandomAffine(degrees=8, translate=(0.05, 0.05), scale=(0.95, 1.05)),
         transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15),
+        transforms.ColorJitter(brightness=0.03, contrast=0.03, saturation=0.01),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
@@ -134,6 +130,18 @@ if __name__ == "__main__":
     best_val_acc = 0.0
     best_model_path = None
     best_val_loss = float('inf')
+
+    def save_checkpoint(path, model, num_classes, class_names, val_acc, best_val_loss, epoch):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'num_classes': num_classes,
+            'class_names': class_names,
+            'val_acc': val_acc,
+            'best_val_loss': best_val_loss,
+            'epoch': epoch
+        }, path)
+        print(f"Saved checkpoint: {path}")
 
     start_epoch = 1
     lr_drop_target = args.stop_after_lr_drops
@@ -217,13 +225,7 @@ if __name__ == "__main__":
                 print(f"Reached target LR drops ({lr_drop_target}); stopping early after epoch {epoch}.")
                 timestamp_es = datetime.now().strftime('%Y%m%d_%H%M%S')
                 es_path = f"models/{timestamp_es}_earlystop_last.pth"
-                torch.save({
-                    'model_state_dict': model.state_dict(),
-                    'num_classes': num_classes,
-                    'class_names': class_names,
-                    'val_acc': best_val_acc,
-                    'epoch': epoch
-                }, es_path)
+                save_checkpoint(es_path, model, num_classes, class_names, best_val_acc, best_val_loss, epoch)
                 print(f"Early-stop model saved to {es_path}")
                 break
 
@@ -235,25 +237,11 @@ if __name__ == "__main__":
                 best_val_acc = val_acc
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 best_model_path = f"models/{timestamp}_best.pth"
-                torch.save({
-                    'model_state_dict': model.state_dict(),
-                    'num_classes': num_classes,
-                    'class_names': class_names,
-                    'val_acc': val_acc,
-                    'best_val_loss': best_val_loss,
-                    'epoch': epoch
-                }, best_model_path)
+                save_checkpoint(best_model_path, model, num_classes, class_names, val_acc, best_val_loss, epoch)
                 print(f"  -> New best model saved: {best_model_path}")
     timestamp_end = datetime.now().strftime('%Y%m%d_%H%M%S')
     last_model_path = f"models/{timestamp_end}_last.pth"
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'num_classes': num_classes,
-        'class_names': class_names,
-        'val_acc': best_val_acc,
-        'best_val_loss': best_val_loss,
-        'epoch': EPOCHS
-    }, last_model_path)
+    save_checkpoint(last_model_path, model, num_classes, class_names, best_val_acc, best_val_loss, EPOCHS)
     print(f"Last model saved to {last_model_path}")
     if best_model_path and os.path.isfile(best_model_path):
         print(f"Best model was {best_model_path} (Val Acc: {best_val_acc:.2f}%, Best Val Loss: {best_val_loss if best_val_loss != float('inf') else 'n/a'})")

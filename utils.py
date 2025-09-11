@@ -1,6 +1,9 @@
 """Utility helpers for robust image loading & preprocessing."""
+import os
 from PIL import Image, ImageOps, ImageFile
 import warnings
+
+import torch
 
 Image.MAX_IMAGE_PIXELS = 300_000_000  # safety cap for huge images
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -52,5 +55,17 @@ def safe_downscale(img):
     except Exception:
         pass
     return img
+def save_checkpoint(path, model, num_classes, class_names, val_acc, best_val_loss, epoch):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'num_classes': num_classes,
+        'class_names': class_names,
+        'val_acc': val_acc,
+        'best_val_loss': best_val_loss,
+        'epoch': epoch
+    }, path)
+    print(f"Saved checkpoint: {path}")
 
-__all__ = ["safe_image_loader", "safe_downscale"]
+        
+__all__ = ["safe_image_loader", "safe_downscale", "save_checkpoint"]
